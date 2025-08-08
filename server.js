@@ -15,12 +15,14 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
     console.error('❌ DATABASE_URL environment variable is not set!');
-    process.exit(1);
+    if (process.env.NODE_ENV !== 'production') {
+        process.exit(1);
+    }
 }
 
 const pool = new Pool({ 
     connectionString: DATABASE_URL, 
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false 
+    ssl: { rejectUnauthorized: false }
 });
 
 async function initDb() {
@@ -29,20 +31,40 @@ async function initDb() {
         await pool.query('SELECT NOW()'); // Test connection
         console.log('✅ Database connected successfully');
         
+        // Modified table to store SVG content directly
         await pool.query(`CREATE TABLE IF NOT EXISTS images (
             id SERIAL PRIMARY KEY,
             filename TEXT UNIQUE NOT NULL,
             original_name TEXT,
             size BIGINT,
+            content TEXT,
+            mime_type TEXT DEFAULT 'image/svg+xml',
             uploaded_at TIMESTAMPTZ DEFAULT NOW()
         );`);
+        
+        // Check if content column exists, if not add it
+        try {
+            await pool.query('SELECT content FROM images LIMIT 1');
+        } catch (columnError) {
+            if (columnError.message.includes('does not exist')) {
+                console.log('🔄 Adding content column to existing table...');
+                await pool.query('ALTER TABLE images ADD COLUMN content TEXT');
+                await pool.query('ALTER TABLE images ADD COLUMN mime_type TEXT DEFAULT \'image/svg+xml\'');
+                console.log('✅ Database schema updated');
+            }
+        }
+        
         console.log('✅ Database tables initialized');
     } catch (error) {
         console.error('❌ Database initialization failed:', error.message);
         console.error('Connection string check:', DATABASE_URL ? 'Present' : 'Missing');
     }
 }
-initDb();
+
+// Initialize DB only in serverless environment or local development
+if (process.env.NETLIFY_DEV || !process.env.NETLIFY) {
+    initDb();
+}
 
 // Enable CORS for all origins with better configuration
 app.use(cors({
@@ -53,22 +75,8 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
-}
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        // Use original filename as is
-        cb(null, file.originalname);
-    }
-});
+// Configure multer for memory storage (since we can't use disk storage in Netlify Functions)
+const storage = multer.memoryStorage();
 
 // File filter to accept only SVG files
 const fileFilter = (req, file, cb) => {
@@ -86,9 +94,6 @@ const upload = multer({
         fileSize: 5 * 1024 * 1024 // 5MB limit
     }
 });
-
-// Serve static files from uploads directory
-app.use('/images', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 
@@ -125,6 +130,23 @@ app.get('/', (req, res) => {
     });
 });
 
+// Debug route to check database content
+app.get('/debug/images', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT filename, original_name, size, LENGTH(content) as content_length, uploaded_at FROM images ORDER BY uploaded_at DESC');
+        res.json({
+            success: true,
+            count: result.rows.length,
+            images: result.rows
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 // Upload SVG image
 app.post('/upload', upload.single('image'), async (req, res) => {
     try {
@@ -135,24 +157,46 @@ app.post('/upload', upload.single('image'), async (req, res) => {
             });
         }
 
-        const imageUrl = `${req.protocol}://${req.get('host')}/images/${req.file.filename}`;
+        // Convert buffer to string for SVG content
+        const svgContent = req.file.buffer.toString('utf8');
+        const filename = req.file.originalname;
+        
+        // Validate it's actually SVG content
+        if (!svgContent.includes('<svg') || !svgContent.includes('</svg>')) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid SVG file format'
+            });
+        }
 
-        // Store metadata in DB (upsert on filename)
+        const imageUrl = `${req.protocol}://${req.get('host')}/images/${filename}`;
+
+        // Store in database
         try {
             await pool.query(
-              `INSERT INTO images (filename, original_name, size) VALUES ($1,$2,$3)
-               ON CONFLICT (filename) DO UPDATE SET original_name = EXCLUDED.original_name, size = EXCLUDED.size`,
-              [req.file.filename, req.file.originalname, req.file.size]
+                `INSERT INTO images (filename, original_name, size, content, mime_type) 
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (filename) 
+                 DO UPDATE SET 
+                    original_name = EXCLUDED.original_name, 
+                    size = EXCLUDED.size, 
+                    content = EXCLUDED.content,
+                    uploaded_at = NOW()`,
+                [filename, req.file.originalname, req.file.size, svgContent, 'image/svg+xml']
             );
         } catch (dbErr) {
             console.error('DB insert error:', dbErr.message);
+            return res.status(500).json({
+                success: false,
+                message: 'Database error while saving image'
+            });
         }
         
         res.json({
             success: true,
             message: 'SVG image uploaded successfully',
             data: {
-                filename: req.file.filename,
+                filename: filename,
                 originalName: req.file.originalname,
                 size: req.file.size,
                 url: imageUrl,
@@ -160,6 +204,7 @@ app.post('/upload', upload.single('image'), async (req, res) => {
             }
         });
     } catch (error) {
+        console.error('Upload error:', error);
         res.status(500).json({
             success: false,
             message: 'Error uploading file',
@@ -171,36 +216,35 @@ app.post('/upload', upload.single('image'), async (req, res) => {
 // List all uploaded images
 app.get('/images/list', async (req, res) => {
     try {
-        const files = fs.readdirSync(uploadsDir).filter(f => f.toLowerCase().endsWith('.svg'));
+        // Fetch all images from database
+        const result = await pool.query(
+            'SELECT filename, original_name, size, uploaded_at FROM images ORDER BY uploaded_at DESC'
+        );
 
-        // Fetch db metadata for all
-        let dbRows = [];
-        try {
-            const result = await pool.query('SELECT filename, original_name, size, uploaded_at FROM images WHERE filename = ANY($1)', [files]);
-            dbRows = result.rows;
-        } catch (dbErr) {
-            console.error('DB fetch error:', dbErr.message);
-        }
-        const dbMap = Object.fromEntries(dbRows.map(r => [r.filename, r]));
-
-        const imageList = files.map(file => {
-            const filePath = path.join(uploadsDir, file);
-            const stats = fs.statSync(filePath);
-            const imageUrl = `${req.protocol}://${req.get('host')}/images/${file}`;
-            const meta = dbMap[file];
+        const imageList = result.rows.map(row => {
+            const imageUrl = `${req.protocol}://${req.get('host')}/images/${row.filename}`;
             return {
-                filename: file,
-                originalName: meta?.original_name || file,
+                filename: row.filename,
+                originalName: row.original_name || row.filename,
                 url: imageUrl,
                 directUrl: imageUrl,
-                size: meta?.size || stats.size,
-                uploadedAt: meta?.uploaded_at || stats.birthtime
+                size: parseInt(row.size),
+                uploadedAt: row.uploaded_at
             };
         });
 
-        res.json({ success: true, count: imageList.length, images: imageList });
+        res.json({ 
+            success: true, 
+            count: imageList.length, 
+            images: imageList 
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error fetching image list', error: error.message });
+        console.error('Error fetching image list:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error fetching image list', 
+            error: error.message 
+        });
     }
 });
 
@@ -208,36 +252,37 @@ app.get('/images/list', async (req, res) => {
 app.get('/api/images/:filename', async (req, res) => {
     try {
         const filename = req.params.filename;
-        const filePath = path.join(uploadsDir, filename);
+        
+        const result = await pool.query(
+            'SELECT filename, original_name, size, uploaded_at FROM images WHERE filename = $1',
+            [filename]
+        );
 
-        if (!fs.existsSync(filePath)) {
+        if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Image not found' });
         }
 
-        const stats = fs.statSync(filePath);
+        const row = result.rows[0];
         const imageUrl = `${req.protocol}://${req.get('host')}/images/${filename}`;
-
-        let meta;
-        try {
-            const result = await pool.query('SELECT filename, original_name, size, uploaded_at FROM images WHERE filename=$1', [filename]);
-            meta = result.rows[0];
-        } catch (dbErr) {
-            console.error('DB fetch single error:', dbErr.message);
-        }
 
         res.json({
             success: true,
             data: {
                 filename: filename,
-                originalName: meta?.original_name || filename,
+                originalName: row.original_name || filename,
                 url: imageUrl,
                 directUrl: imageUrl,
-                size: meta?.size || stats.size,
-                uploadedAt: meta?.uploaded_at || stats.birthtime
+                size: parseInt(row.size),
+                uploadedAt: row.uploaded_at
             }
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error fetching image', error: error.message });
+        console.error('Error fetching image:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error fetching image', 
+            error: error.message 
+        });
     }
 });
 
@@ -245,19 +290,54 @@ app.get('/api/images/:filename', async (req, res) => {
 app.delete('/images/:filename', async (req, res) => {
     try {
         const filename = req.params.filename;
-        const filePath = path.join(uploadsDir, filename);
-
-        if (!fs.existsSync(filePath)) {
+        
+        const result = await pool.query('DELETE FROM images WHERE filename = $1 RETURNING filename', [filename]);
+        
+        if (result.rowCount === 0) {
             return res.status(404).json({ success: false, message: 'Image not found' });
         }
 
-        fs.unlinkSync(filePath);
-        // Remove from DB
-        try { await pool.query('DELETE FROM images WHERE filename=$1', [filename]); } catch (dbErr) { console.error('DB delete error:', dbErr.message); }
-
         res.json({ success: true, message: 'Image deleted successfully' });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error deleting image', error: error.message });
+        console.error('Error deleting image:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error deleting image', 
+            error: error.message 
+        });
+    }
+});
+
+// Serve SVG images directly from database (must be last in /images routes)
+app.get('/images/:filename', async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const result = await pool.query(
+            'SELECT content, mime_type FROM images WHERE filename = $1',
+            [filename]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Image not found' });
+        }
+
+        const image = result.rows[0];
+        
+        // Check if content exists
+        if (!image.content) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Image content not available. Please re-upload the image.' 
+            });
+        }
+        
+        // Set appropriate headers for SVG
+        res.setHeader('Content-Type', image.mime_type || 'image/svg+xml');
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+        res.send(image.content);
+    } catch (error) {
+        console.error('Error serving image:', error);
+        res.status(500).json({ success: false, message: 'Error serving image', error: error.message });
     }
 });
 
@@ -278,16 +358,18 @@ app.use((error, req, res, next) => {
     });
 });
 
-// Start server
-app.listen(PORT, HOST, () => {
-    console.log(`🚀 SVG Images API Server running on http://${HOST}:${PORT}`);
-    console.log(`📁 Upload directory: ${uploadsDir}`);
-    console.log(`📋 Available endpoints:`);
-    console.log(`   POST   /upload - Upload SVG image`);
-    console.log(`   GET    /images/list - List all images`);
-    console.log(`   GET    /api/images/:filename - Get image info`);
-    console.log(`   GET    /images/:filename - Direct image access`);
-    console.log(`   DELETE /images/:filename - Delete image`);
-});
+// Start server (only in local development)
+if (!process.env.NETLIFY) {
+    app.listen(PORT, HOST, () => {
+        console.log(`🚀 SVG Images API Server running on http://${HOST}:${PORT}`);
+        console.log(`�️  Using Neon PostgreSQL database for storage`);
+        console.log(`📋 Available endpoints:`);
+        console.log(`   POST   /upload - Upload SVG image`);
+        console.log(`   GET    /images/list - List all images`);
+        console.log(`   GET    /api/images/:filename - Get image info`);
+        console.log(`   GET    /images/:filename - Direct image access`);
+        console.log(`   DELETE /images/:filename - Delete image`);
+    });
+}
 
 module.exports = app;
