@@ -1,0 +1,27 @@
+{
+  "name": "svg-images-api",
+  "version": "1.0.0",
+  "description": "Simple API service for uploading and fetching SVG images",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "cors": "^2.8.5",
+    "path": "^0.12.7",
+    "pg": "^8.11.5",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": ["svg", "api", "images", "upload", "fetch"],
+  "author": "Your Name",
+  "license": "MIT"
+}

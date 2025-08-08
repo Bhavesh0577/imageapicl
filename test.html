@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SVG Images API - Test Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .section h3 {
+            margin-top: 0;
+            color: #555;
+        }
+
+        .upload-area {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .upload-area.dragover {
+            border-color: #007cba;
+            background-color: #f0f8ff;
+        }
+
+        input[type="file"] {
+            margin: 10px 0;
+        }
+
+        button {
+            background: #007cba;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #005a87;
+        }
+
+        .result {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .image-item {
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .image-item img {
+            max-width: 100%;
+            max-height: 64px;
+            margin-bottom: 10px;
+        }
+
+        .image-item .filename {
+            font-size: 12px;
+            color: #666;
+            word-break: break-all;
+            margin-bottom: 5px;
+        }
+
+        .image-item .url {
+            font-size: 10px;
+            color: #999;
+            background: #f0f0f0;
+            padding: 5px;
+            border-radius: 3px;
+            margin: 5px 0;
+        }
+
+        .copy-btn {
+            font-size: 10px;
+            padding: 3px 8px;
+        }
+
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎨 SVG Images API - Test Interface</h1>
+
+        <div class="section">
+            <h3>📤 Upload SVG Image</h3>
+            <div class="upload-area" id="uploadArea">
+                <p>Drag and drop an SVG file here, or click to select</p>
+                <label for="fileInput">Choose SVG file:</label>
+                <input type="file" id="fileInput" accept=".svg,image/svg+xml">
+                <button onclick="uploadFile()">Upload SVG</button>
+            </div>
+            <div id="uploadResult"></div>
+        </div>
+
+        <div class="section">
+            <h3>📋 All Images</h3>
+            <button onclick="loadImages()">Refresh Images List</button>
+            <div id="imagesList"></div>
+        </div>
+
+        <div class="section">
+            <h3>🔗 Usage Examples</h3>
+            <div id="usageExamples">
+                <h4>HTML:</h4>
+                <pre><code>&lt;img src="http://localhost:3000/images/your-filename.svg" alt="Icon" width="32" height="32" /&gt;</code></pre>
+
+                <h4>React/JSX:</h4>
+                <pre><code>&lt;img 
+  src="http://localhost:3000/images/your-filename.svg" 
+  alt="Icon"
+  width={32} 
+  height={32}
+  className="tech-icon"
+/&gt;</code></pre>
+
+                <h4>CSS:</h4>
+                <pre><code>.icon {
+  background-image: url('http://localhost:3000/images/your-filename.svg');
+  width: 32px;
+  height: 32px;
+  background-size: contain;
+}</code></pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+
+        // Drag and drop functionality
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                uploadFile();
+            }
+        });
+
+        // Upload file function
+        async function uploadFile() {
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('Please select a file');
+                return;
+            }
+
+            if (!file.name.toLowerCase().endsWith('.svg')) {
+                alert('Please select an SVG file');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', file);
+
+            try {
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('uploadResult').innerHTML = `
+                        <div class="result">
+                            <h4>✅ Upload Successful!</h4>
+                            <p><strong>Filename:</strong> ${result.data.filename}</p>
+                            <p><strong>Size:</strong> ${(result.data.size / 1024).toFixed(2)} KB</p>
+                            <p><strong>URL:</strong> 
+                                <span class="url">${result.data.url}</span>
+                                <button class="copy-btn" onclick="copyToClipboard('${result.data.url}')">Copy</button>
+                            </p>
+                            <div style="text-align: center; margin-top: 15px;">
+                                <img src="${result.data.url}" alt="Uploaded SVG" style="max-height: 64px;">
+                            </div>
+                        </div>
+                    `;
+                    loadImages(); // Refresh the images list
+                } else {
+                    document.getElementById('uploadResult').innerHTML = `
+                        <div class="result" style="background: #ffe6e6;">
+                            <h4>❌ Upload Failed</h4>
+                            <p>${result.message}</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('uploadResult').innerHTML = `
+                    <div class="result" style="background: #ffe6e6;">
+                        <h4>❌ Error</h4>
+                        <p>Failed to upload file: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Load images function
+        async function loadImages() {
+            try {
+                const response = await fetch(`${API_BASE}/images/list`);
+                const result = await response.json();
+
+                if (result.success && result.images.length > 0) {
+                    const imagesHtml = result.images.map(image => `
+                        <div class="image-item">
+                            <img src="${image.url}" alt="${image.filename}">
+                            <div class="filename">${image.filename}</div>
+                            <div class="url">${image.url}</div>
+                            <button class="copy-btn" onclick="copyToClipboard('${image.url}')">Copy URL</button>
+                            <button class="copy-btn" onclick="deleteImage('${image.filename}')" style="background: #dc3545;">Delete</button>
+                        </div>
+                    `).join('');
+
+                    document.getElementById('imagesList').innerHTML = `
+                        <p>Found ${result.count} images:</p>
+                        <div class="image-grid">${imagesHtml}</div>
+                    `;
+                } else {
+                    document.getElementById('imagesList').innerHTML = `
+                        <div class="result">
+                            <p>No images found. Upload some SVG files to get started!</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('imagesList').innerHTML = `
+                    <div class="result" style="background: #ffe6e6;">
+                        <p>Error loading images: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Copy to clipboard function
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('URL copied to clipboard!');
+            });
+        }
+
+        // Delete image function
+        async function deleteImage(filename) {
+            if (!confirm(`Are you sure you want to delete ${filename}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/images/${filename}`, {
+                    method: 'DELETE'
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert('Image deleted successfully!');
+                    loadImages(); // Refresh the images list
+                } else {
+                    alert('Failed to delete image: ' + result.message);
+                }
+            } catch (error) {
+                alert('Error deleting image: ' + error.message);
+            }
+        }
+
+        // Load images on page load
+        window.onload = () => {
+            loadImages();
+        };
+    </script>
+</body>
+
+</html>
