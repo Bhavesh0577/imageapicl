@@ -11,23 +11,46 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || 'localhost';
 
 // Database (Neon PostgreSQL) setup
-// Prefer DATABASE_URL env var; fallback to provided connection string (NOT recommended to hardcode in production)
 const DATABASE_URL = process.env.DATABASE_URL;
-const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
+if (!DATABASE_URL) {
+    console.error('❌ DATABASE_URL environment variable is not set!');
+    process.exit(1);
+}
+
+const pool = new Pool({ 
+    connectionString: DATABASE_URL, 
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false 
+});
 
 async function initDb() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS images (
-    id SERIAL PRIMARY KEY,
-    filename TEXT UNIQUE NOT NULL,
-    original_name TEXT,
-    size BIGINT,
-    uploaded_at TIMESTAMPTZ DEFAULT NOW()
-  );`);
+    try {
+        console.log('🔗 Connecting to database...');
+        await pool.query('SELECT NOW()'); // Test connection
+        console.log('✅ Database connected successfully');
+        
+        await pool.query(`CREATE TABLE IF NOT EXISTS images (
+            id SERIAL PRIMARY KEY,
+            filename TEXT UNIQUE NOT NULL,
+            original_name TEXT,
+            size BIGINT,
+            uploaded_at TIMESTAMPTZ DEFAULT NOW()
+        );`);
+        console.log('✅ Database tables initialized');
+    } catch (error) {
+        console.error('❌ Database initialization failed:', error.message);
+        console.error('Connection string check:', DATABASE_URL ? 'Present' : 'Missing');
+    }
 }
-initDb().catch(err => console.error('DB init error:', err));
+initDb();
 
-// Enable CORS for all origins
-app.use(cors());
+// Enable CORS for all origins with better configuration
+app.use(cors({
+    origin: true, // Allow all origins for development
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Create uploads directory if it doesn't exist
@@ -68,6 +91,25 @@ const upload = multer({
 app.use('/images', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+    try {
+        await pool.query('SELECT NOW()');
+        res.json({ 
+            status: 'healthy', 
+            database: 'connected',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            status: 'unhealthy', 
+            database: 'disconnected',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 
 // Root route - API info
 app.get('/', (req, res) => {
